@@ -1,0 +1,16 @@
+L=westeurope
+RG=anbo-private-ipam
+CAENV=anbo-ipam-env
+az group create --name $RG --location $L
+az deployment group create --resource-group $RG --template-file main.bicep --parameters importImagesToAcr=false
+
+az network private-link-resource list \
+    --resource-group $RG \
+    --name acryualf4s6fzrdg \
+    --type Microsoft.ContainerRegistry/registries
+
+
+az network private-link-resource list \
+    --resource-group $RG \
+    --name mariadb-phpipam-4445dycckcnae \
+    --type Microsoft.DBforMariaDB/servers

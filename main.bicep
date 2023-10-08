@@ -8,7 +8,7 @@ param containerRegistryName string = 'acr${salt}'
 param dbCredential string = '${projectName}-db-pass-${salt}'
 param dbUser string = 'andre'
 param containerAppEnvName string = 'caenv-${projectName}-${salt}'
-
+param deployApps bool = true
 param location string = resourceGroup().location
 param importImagesToAcr bool = false
 var pvtEndpointDnsGroupName = 'mydnsgroupname'
@@ -20,6 +20,7 @@ param fileShareNames object = {
   logo: '${projectName}-logo'
   ca: '${projectName}-ca'
 }
+param denyInternet bool = true
 
 param privateEndpointName string = 'cape-${projectName}-${salt}'
 param privateEndpointNameDB string = 'capedb-${projectName}-${salt}'
@@ -32,12 +33,12 @@ param internalOnly bool = true
 param vnetAddressSpace string = '10.144.0.0/20'
 
 var appEnvSubnetCidr = cidrSubnet(vnetAddressSpace, 23, 0)
+var firewallSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 12)
 var dbSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 13)
 var privateLinkSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 14)
 var appEnvSubnetAppGw = cidrSubnet(vnetAddressSpace, 24, 15)
 
 var acrPullRole = resourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
-
 
 resource privateEndpointDb 'Microsoft.Network/privateEndpoints@2023-04-01' = {
   name: privateEndpointNameDB
@@ -179,7 +180,7 @@ resource acrPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   }
 }
 // network security group to deny internet
-resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
+resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-04-01' = if (denyInternet) {
   name: 'nsg-${projectName}-${salt}'
   location: location
   properties: {
@@ -215,15 +216,24 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
         name: 'containerapp'
         properties: {
           addressPrefix: appEnvSubnetCidr
-          networkSecurityGroup: {
+          networkSecurityGroup: (denyInternet) ? {
             id: nsgDenyInternet.id
-          }
+          } : null
           delegations: [ {
               name: 'Microsoft.App/environments'
               properties: {
                 serviceName: 'Microsoft.App/environments'
               }
-            } ]
+            }
+          ]
+        }
+      }
+      {
+        name: 'AzureFirewallSubnet'
+        properties: {
+          addressPrefix: firewallSubnetCidr
+          delegations: []
+          serviceEndpoints: []
         }
       }
       {
@@ -260,6 +270,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
   }
   resource containerappSubnet 'subnets' existing = {
     name: 'containerapp'
+  }
+  resource firewallSubnet 'subnets' existing = {
+    name: 'AzureFirewallSubnet'
   }
   resource dbSubnet 'subnets' existing = {
     name: 'dbsubnet'
@@ -321,11 +334,12 @@ module acrImport 'br/public:deployment-scripts/import-acr:1.0.1' = if (importIma
   }
 }
 
-resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = {
+resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
     acrImport
+    routeToSubnet
   ] : [
-
+    routeToSubnet
   ]
   name: containerAppName
   location: location
@@ -438,11 +452,12 @@ resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = {
+resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
     acrImport
+    routeToSubnet
   ] : [
-    
+    routeToSubnet
   ]
   name: '${containerAppName}-cron'
   location: location
@@ -517,9 +532,7 @@ resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = {
       scale: {
         minReplicas: 1
         maxReplicas: 1
-        rules: [
-         
-        ]
+        rules: []
       }
       volumes: [
         {
@@ -565,20 +578,21 @@ resource mariaDbServer 'Microsoft.DBforMariaDB/servers@2018-06-01' = {
   //   }
   // }
 
-// resource virtualNetworkRule 'virtualNetworkRules@2018-06-01' = {
-//   name: 'myrule'
-//   properties: {
-//     virtualNetworkSubnetId: vnet::dbSubnet.id
-//   }
-// }
+  // resource virtualNetworkRule 'virtualNetworkRules@2018-06-01' = {
+  //   name: 'myrule'
+  //   properties: {
+  //     virtualNetworkSubnetId: vnet::dbSubnet.id
+  //   }
+  // }
 
 }
 
-resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = {
+resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
     acrImport
+    routeToSubnet
   ] : [
-
+    routeToSubnet
   ]
   name: 'debugcontainerapp'
   location: location
@@ -654,9 +668,23 @@ resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2020-06-01' = {
     }
   }
 }
+
+resource firewallPublicIPAddress 'Microsoft.Network/publicIPAddresses@2020-06-01' = {
+  name: 'MyFirewall-PIP'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    dnsSettings: {
+      domainNameLabel: 'azfw${salt}'
+    }
+  }
+}
 param applicationGatewayName string = 'appgw-${containerAppName}'
 
-resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' = {
+resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' = if (deployApps) {
   name: applicationGatewayName
   location: location
   properties: {
@@ -730,7 +758,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' =
           backendAddresses: [
             {
               //fqdn: containerAppDebug.properties.configuration.ingress.fqdn
-              fqdn: containerAppIpam.properties.configuration.ingress.fqdn
+              fqdn: deployApps ? containerAppIpam.properties.configuration.ingress.fqdn : 'https://google.com'
             }
           ]
         }
@@ -784,4 +812,233 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' =
   }
 }
 
-output containerAppFQDN string = containerAppIpam.properties.configuration.ingress.fqdn
+resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2020-11-01' = {
+  parent: firewallPolicy
+  name: 'DefaultNetworkRuleCollectionGroup'
+  properties: {
+    priority: 100
+    ruleCollections: [
+      {
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        name: 'AzureManagement'
+        action: {
+          type: 'Allow'
+        }
+        priority: 1000
+        rules: [
+          {
+            ruleType: 'NetworkRule'
+            name: 'AzureManagement'
+            sourceAddresses: [
+              vnetAddressSpace
+            ]
+            destinationPorts: [
+              '1194'
+              '9000'
+            ]
+            ipProtocols: [
+              'Any'
+            ]
+            destinationAddresses: [
+              'AzureCloud.${location}'
+            ]
+          }
+
+          {
+            ruleType: 'NetworkRule'
+            name: 'ContainerApps'
+            sourceAddresses: [
+              vnetAddressSpace
+            ]
+            destinationPorts: [
+              '80'
+              '443'
+            ]
+            destinationAddresses: [
+              'MicrosoftContainerRegistry'
+              'AzureFrontDoorFirstParty'
+              'AzureContainerRegistry'
+              'AzureActiveDirectory'
+              'AzureKeyVault'
+              'AzureMonitor'
+            ]
+            ipProtocols: [
+              'Any'
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+var loginEndpointWithoutProtocolAndWithoutSlashes = replace(replace(environment().authentication.loginEndpoint, 'https://', ''), '/', '')
+resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2020-11-01' = {
+  parent: firewallPolicy
+  name: 'DefaultApplicationRuleCollectionGroup'
+  properties: {
+    priority: 110
+    ruleCollections: [
+      {
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        name: 'AzureContainerAppsEgress'
+        action: {
+          type: 'Allow'
+        }
+        priority: 1000
+        rules: [
+          {
+            ruleType: 'ApplicationRule'
+            name: 'AzureManagement'
+            protocols: [
+              {
+                protocolType: 'Http'
+                port: 80
+              }
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+            ]
+            targetFqdns: [
+              '*.azure.com'
+            ]
+            sourceAddresses: [
+              '*'
+            ]
+          }
+          {
+            ruleType: 'ApplicationRule'
+            name: 'DockerImages'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+            ]
+            targetFqdns: [
+              '*.docker.io'
+              '*.mcr.microsoft.com'
+              '*.azurecr.io'
+              'hub.docker.com'
+              '*.data.mcr.microsoft.com'
+              'registry-1.docker.io'
+              'production.cloudflare.docker.com'
+            ]
+            sourceAddresses: [
+              '*'
+            ]
+          }
+          {
+            ruleType: 'ApplicationRule'
+            name: 'AzureContainerRegistry'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+            ]
+            targetFqdns: [
+              '*.azurecr.io'
+              '*.blob.windows.net'
+            ]
+            sourceAddresses: [
+              '*'
+            ]
+          }
+          {
+            ruleType: 'ApplicationRule'
+            name: 'AzureActiveDirectory'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+            ]
+            targetFqdns: [
+              loginEndpointWithoutProtocolAndWithoutSlashes
+              '*.identity.azure.net'
+              '*.${loginEndpointWithoutProtocolAndWithoutSlashes}'
+              '*.login.microsoft.com'
+              'login.microsoft.com'
+            ]
+            sourceAddresses: [
+              '*'
+            ]
+          }
+        ]
+      }
+    ]
+  }
+  dependsOn: [
+    ruleCollectionGroup2 // just so they are not created at the same time
+  ]
+}
+
+resource firewall 'Microsoft.Network/azureFirewalls@2023-05-01' = {
+  name: 'myAzureFirewall'
+  location: location
+  properties: {
+
+    ipConfigurations: [
+      {
+        name: 'config1'
+        properties: {
+          subnet: {
+            id: vnet::firewallSubnet.id
+          }
+          publicIPAddress: {
+            id: firewallPublicIPAddress.id
+          }
+        }
+      }
+    ]
+    sku: {
+      name: 'AZFW_VNet'
+      tier: 'Standard'
+    }
+    threatIntelMode: 'Alert'
+    firewallPolicy: {
+      id: firewallPolicy.id
+    }
+  }
+}
+resource firewallPolicy 'Microsoft.Network/firewallPolicies@2020-11-01' = {
+  name: 'myFirewallPolicy'
+  location: location
+  properties: {
+    threatIntelMode: 'Alert'
+    sku: {
+      tier: 'Standard'
+    }
+  }
+}
+
+var firewallPrivateIp = cidrHost(firewallSubnetCidr, 3)
+
+resource routeTable 'Microsoft.Network/routeTables@2020-08-01' = {
+  name: 'myRouteTable'
+  location: location
+  properties: {
+    disableBgpRoutePropagation: false
+    routes: [
+      {
+        name: 'routeToFirewall'
+        properties: {
+          addressPrefix: '0.0.0.0/0'
+          nextHopType: 'VirtualAppliance'
+          nextHopIpAddress: firewallPrivateIp
+        }
+      }
+    ]
+  }
+}
+
+module routeToSubnet 'addRouteTable.bicep' = if (denyInternet) {
+  name: 'addRouteToSubnet'
+  params: {
+    routeTableName: routeTable.name
+    vnetName: vnetName
+    subnetProp: vnet::containerappSubnet.properties
+  }
+}

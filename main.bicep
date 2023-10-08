@@ -117,6 +117,7 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-04-01' = {
     }
   }
 }
+
 module caenv 'caenv.bicep' = {
   name: 'caenv'
   params: {
@@ -129,6 +130,9 @@ module caenv 'caenv.bicep' = {
     internalOnly: internalOnly
     vnetSubnetId: vnet::containerappSubnet.id
   }
+  dependsOn: [
+    firewall
+  ]
 }
 
 module privatedns 'privatedns.bicep' = {
@@ -888,6 +892,9 @@ resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollection
       }
     ]
   }
+  dependsOn: [
+    ruleCollectionGroup
+  ]
 }
 
 var loginEndpointWithoutProtocolAndWithoutSlashes = replace(replace(environment().authentication.loginEndpoint, 'https://', ''), '/', '')
@@ -988,9 +995,6 @@ resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionG
       }
     ]
   }
-  dependsOn: [
-    ruleCollectionGroup2 // just so they are not created at the same time
-  ]
 }
 
 resource firewall 'Microsoft.Network/azureFirewalls@2023-05-01' = {

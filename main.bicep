@@ -180,11 +180,24 @@ resource acrPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   }
 }
 // network security group to deny internet
-resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-04-01' = if (denyInternet) {
+resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
   name: 'nsg-${projectName}-${salt}'
   location: location
   properties: {
     securityRules: [
+      {
+        name: 'Allow_VNet_Outbound'
+        properties: {
+          priority: 100
+          access: 'Allow'
+          direction: 'Outbound'
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          destinationPortRange: '*'
+          destinationAddressPrefix: 'VirtualNetwork'
+        }
+      }
       {
         name: 'deny-internet'
         properties: {
@@ -1034,7 +1047,7 @@ resource routeTable 'Microsoft.Network/routeTables@2020-08-01' = {
   }
 }
 
-module routeToSubnet 'addRouteTable.bicep' = if (denyInternet) {
+module routeToSubnet 'addRouteTable.bicep' = {
   name: 'addRouteToSubnet'
   params: {
     routeTableName: routeTable.name

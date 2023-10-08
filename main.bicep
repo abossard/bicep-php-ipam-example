@@ -642,7 +642,12 @@ resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deploy
         {
           name: 'debugcontainer'
           image: '${acr.properties.loginServer}/google_containers/echoserver:1.10'
-          env: []
+          env: [
+            {
+              name: 'ITWORKS'
+              value: 'YES'
+            }
+          ]
           resources: {
             cpu: json('1')
             memory: '2Gi'

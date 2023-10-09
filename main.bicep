@@ -25,7 +25,7 @@ param privateEndpointStorageName string = 'cast-${projectName}-${salt}'
 param privateEndpointDBName string = 'capedb-${projectName}-${salt}'
 param vnetName string = 'cavnet-${projectName}-${salt}'
 
-param dbUser string = 'dbadmin${salt}'
+param dbUser string = 'dbadm${substring(salt, 0, 4)}'
 
 var privateDnsGroupNameAzureContainerRegistry = 'acrdns'
 var privateDnsGroupNameForDatabase = 'dbdns'
@@ -294,7 +294,7 @@ resource storagePrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-05-01' 
         properties: {
           privateLinkServiceId: caenv.outputs.storageAccountId
           groupIds: [
-            'storage'
+            'file'
           ]
         }
       }
@@ -414,14 +414,19 @@ module acrImport 'br/public:deployment-scripts/import-acr:1.0.1' = if (importIma
   }
 }
 
-
 // Chapter 006: THE CONTAINER APPS
 resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
     acrImport
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ] : [
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ]
   name: containerAppName
   location: location
@@ -538,8 +543,14 @@ resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = if (dep
   dependsOn: importImagesToAcr ? [
     acrImport
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ] : [
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ]
   name: '${containerAppName}-cron'
   location: location
@@ -632,8 +643,14 @@ resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deploy
   dependsOn: importImagesToAcr ? [
     acrImport
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ] : [
     routeToSubnet
+    firewallPolicy
+    firewall
+    vnet
   ]
   name: 'debugcontainerapp'
   location: location
@@ -870,6 +887,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2023-05-01' =
       {
         name: 'MyRequestRoutingRule'
         properties: {
+          priority: 100
           ruleType: 'Basic'
           httpListener: {
             id: resourceId('Microsoft.Network/applicationGateways/httpListeners', applicationGatewayName, 'MyHttpListener')

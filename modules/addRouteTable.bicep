@@ -10,7 +10,7 @@ resource routeTable 'Microsoft.Network/routeTables@2023-05-01' existing = {
 }
 
 
-resource existingVnet 'Microsoft.Network/virtualNetworks@2023-04-01' existing = {
+resource existingVnet 'Microsoft.Network/virtualNetworks@2023-05-01' existing = {
   name: vnetName
   resource containerappSubnet 'subnets' = {
     name: 'containerapp'

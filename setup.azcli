@@ -1,6 +1,6 @@
 L=westeurope
-RG=anbo-private-ipam15
-CAENV=anbo-ipam-env15
+RG=anbo-private-ipam16
+CAENV=anbo-ipam-env16
 az group create --name $RG --location $L
 az deployment group create --resource-group $RG --template-file main.bicep --parameters importImagesToAcr=true denyInternet=true deployApps=true
 

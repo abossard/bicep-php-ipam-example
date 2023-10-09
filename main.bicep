@@ -1,47 +1,168 @@
+@description('A unique string to ensure that most global names are unique')
 param salt string = uniqueString(resourceGroup().id)
 
+@description('The name of the project. This will be used to generate names for resources')
 param projectName string = 'phpipam'
 
+@description('this decides if the apps are deployed')
+param deployApps bool = true
+
+@description('The location of the resources')
+param location string = resourceGroup().location
+
+@description('This decides if the images are imported to the acr (should only be set to true when you want the latest versions)')
+param importImagesToAcr bool = false
+
+// Default resource name templates
 param containerAppName string = 'ca-${projectName}-${salt}'
 param containerRegistryName string = 'acr${salt}'
-
 param dbCredential string = '${projectName}-db-pass-${salt}'
-param dbUser string = 'andre'
 param containerAppEnvName string = 'caenv-${projectName}-${salt}'
-param deployApps bool = true
-param location string = resourceGroup().location
-param importImagesToAcr bool = false
-var pvtEndpointDnsGroupName = 'mydnsgroupname'
-var pvtEndpointDnsGroupNameDB = 'mydnsgroupnamedb'
 param containerAppLogAnalyticsName string = 'calog-${projectName}-${salt}'
 param storageAccountName string = 'castrg${salt}'
+param privateEndpointACRName string = 'cape-${projectName}-${salt}'
+param privateEndpointStorageName string = 'cast-${projectName}-${salt}'
+param privateEndpointDBName string = 'capedb-${projectName}-${salt}'
+param vnetName string = 'cavnet-${projectName}-${salt}'
+
+param dbUser string = 'dbadmin${salt}'
+
+var privateDnsGroupNameAzureContainerRegistry = 'acrdns'
+var privateDnsGroupNameForDatabase = 'dbdns'
+
+@description('Storage File Shares to setup')
 param fileShareNames object = {
   db: '${projectName}-db-data'
   logo: '${projectName}-logo'
   ca: '${projectName}-ca'
 }
+
+@description('You can allows internet temporarly for debugging purposes (should be true in general)')
 param denyInternet bool = true
 
-param privateEndpointName string = 'cape-${projectName}-${salt}'
-param privateEndpointNameDB string = 'capedb-${projectName}-${salt}'
-param acrPrivateDnsZoneName string = 'privatelink${environment().suffixes.acrLoginServer}'
-param mariadbPrivateDnsZoneName string = 'privatelink.mariadb.database.azure.com'
-// privatelink.mariadb.database.windows.net
-// mariadb-phpipam-4445dycckcnae.mariadb.database.azure.com
-param vnetName string = 'cavnet-${projectName}-${salt}'
+@description('This makes sure the environment is only accessible from within the vnet (required for UDR to work)')
 param internalOnly bool = true
+
+@description('The address space for the vnet')
 param vnetAddressSpace string = '10.144.0.0/20'
 
+param containerAppSubnetName string = 'containerapp'
+param databaseSubnetName string = 'dbsubnet'
+param privateLinkSubnetName string = 'privatelinks'
+param appGatewaySubnetName string = 'appgwsubnet'
+
+var acrPrivateDnsZoneName = 'privatelink${environment().suffixes.acrLoginServer}'
+var storagePrivateDnsZoneName = 'privatelink.file.${environment().suffixes.storage}'
+var mariadbPrivateDnsZoneName = 'privatelink.mariadb.database.azure.com'
+
+// take the first available /23 subnet
 var appEnvSubnetCidr = cidrSubnet(vnetAddressSpace, 23, 0)
+
+// TODO: Optimize the subnetting
 var firewallSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 12)
 var dbSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 13)
 var privateLinkSubnetCidr = cidrSubnet(vnetAddressSpace, 24, 14)
 var appEnvSubnetAppGw = cidrSubnet(vnetAddressSpace, 24, 15)
 
 var acrPullRole = resourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+var microsoftAppEnvironmentName = 'Microsoft.App/environments'
+var azureFirewallSubnetName = 'AzureFirewallSubnet'
 
-resource privateEndpointDb 'Microsoft.Network/privateEndpoints@2023-04-01' = {
-  name: privateEndpointNameDB
+// Chapter 000: The identity
+resource uai 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-${containerAppName}'
+  location: location
+}
+
+// Chapter 001: VNET and Subnets
+resource vnet 'Microsoft.Network/virtualNetworks@2023-05-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        vnetAddressSpace
+      ]
+    }
+    subnets: [
+      {
+        name: containerAppSubnetName
+        properties: {
+          addressPrefix: appEnvSubnetCidr
+          networkSecurityGroup: (denyInternet) ? {
+            id: nsgDenyInternet.id
+          } : null
+          delegations: [ {
+              name: microsoftAppEnvironmentName
+              properties: {
+                serviceName: microsoftAppEnvironmentName
+              }
+            }
+          ]
+        }
+      }
+      {
+        name: azureFirewallSubnetName
+        properties: {
+          addressPrefix: firewallSubnetCidr
+          delegations: []
+          serviceEndpoints: []
+        }
+      }
+      {
+        name: databaseSubnetName
+        properties: {
+          addressPrefix: dbSubnetCidr
+          delegations: []
+          serviceEndpoints: [
+            {
+              service: 'Microsoft.Sql'
+              locations: [
+                location
+              ]
+            }
+          ]
+        }
+      }
+      {
+        name: privateLinkSubnetName
+        properties: {
+          addressPrefix: privateLinkSubnetCidr
+          privateEndpointNetworkPolicies: 'Disabled'
+          delegations: []
+        }
+      }
+      {
+        name: appGatewaySubnetName
+        properties: {
+          addressPrefix: appEnvSubnetAppGw
+          delegations: []
+        }
+      }
+    ]
+  }
+  resource containerappSubnet 'subnets' existing = {
+    name: containerAppSubnetName
+  }
+  resource firewallSubnet 'subnets' existing = {
+    name: azureFirewallSubnetName
+  }
+  resource dbSubnet 'subnets' existing = {
+    name: databaseSubnetName
+  }
+  resource privateLinkSubnet 'subnets' existing = {
+    name: privateLinkSubnetName
+  }
+  resource appGwSubnet 'subnets' existing = {
+    name: appGatewaySubnetName
+  }
+}
+// Chapter 002: Private Endpoints
+
+// Maria DB Private Endpoint + DNS Zone
+var mariaDbPrivateEndpointGroupId = 'mariadbServer'
+resource mariaDbPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-05-01' = {
+  name: privateEndpointDBName
   location: location
   properties: {
     subnet: {
@@ -49,11 +170,11 @@ resource privateEndpointDb 'Microsoft.Network/privateEndpoints@2023-04-01' = {
     }
     privateLinkServiceConnections: [
       {
-        name: privateEndpointNameDB
+        name: privateEndpointDBName
         properties: {
           privateLinkServiceId: mariaDbServer.id
           groupIds: [
-            'mariadbServer'
+            mariaDbPrivateEndpointGroupId
           ]
         }
       }
@@ -61,11 +182,11 @@ resource privateEndpointDb 'Microsoft.Network/privateEndpoints@2023-04-01' = {
   }
   dependsOn: [
     mariadbPrivateDnsZone
-    mariadbPrivateDnsZone::privateDnsZoneLink
+    mariadbPrivateDnsZone::mariaDbPrivateDnsZoneLink
   ]
 
-  resource pvtEndpointDnsGroup 'privateDnsZoneGroups' = {
-    name: pvtEndpointDnsGroupNameDB
+  resource mariaDbPrivateDnsGroup 'privateDnsZoneGroups' = {
+    name: privateDnsGroupNameForDatabase
     properties: {
       privateDnsZoneConfigs: [
         {
@@ -79,8 +200,29 @@ resource privateEndpointDb 'Microsoft.Network/privateEndpoints@2023-04-01' = {
   }
 }
 
-resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-04-01' = {
-  name: privateEndpointName
+resource mariadbPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: mariadbPrivateDnsZoneName
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    vnet
+    acr
+  ]
+  resource mariaDbPrivateDnsZoneLink 'virtualNetworkLinks' = {
+    name: '${mariadbPrivateDnsZoneName}-link'
+    location: 'global'
+    properties: {
+      registrationEnabled: false
+      virtualNetwork: {
+        id: vnet.id
+      }
+    }
+  }
+}
+
+// ACR Private Endpoint + DNS Zone
+resource acrPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-05-01' = {
+  name: privateEndpointACRName
   location: location
   properties: {
     subnet: {
@@ -88,7 +230,7 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-04-01' = {
     }
     privateLinkServiceConnections: [
       {
-        name: privateEndpointName
+        name: privateEndpointACRName
         properties: {
           privateLinkServiceId: acr.id
           groupIds: [
@@ -100,11 +242,11 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-04-01' = {
   }
   dependsOn: [
     acrPrivateDnsZone
-    acrPrivateDnsZone::privateDnsZoneLink
+    acrPrivateDnsZone::acrPrivateDnsZoneLink
   ]
 
-  resource pvtEndpointDnsGroup 'privateDnsZoneGroups' = {
-    name: pvtEndpointDnsGroupName
+  resource acrPrivateEndpointDnsGroup 'privateDnsZoneGroups' = {
+    name: privateDnsGroupNameAzureContainerRegistry
     properties: {
       privateDnsZoneConfigs: [
         {
@@ -118,7 +260,88 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-04-01' = {
   }
 }
 
-module caenv 'caenv.bicep' = {
+resource acrPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: acrPrivateDnsZoneName
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    vnet
+    acr
+  ]
+  resource acrPrivateDnsZoneLink 'virtualNetworkLinks' = {
+    name: '${acrPrivateDnsZoneName}-link'
+    location: 'global'
+    properties: {
+      registrationEnabled: false
+      virtualNetwork: {
+        id: vnet.id
+      }
+    }
+  }
+}
+
+// Storage Private Endpoint and Dns Grop
+resource storagePrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-05-01' = {
+  name: privateEndpointStorageName
+  location: location
+  properties: {
+    subnet: {
+      id: vnet::privateLinkSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: privateEndpointStorageName
+        properties: {
+          privateLinkServiceId: caenv.outputs.storageAccountId
+          groupIds: [
+            'storage'
+          ]
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    storagePrivateDnsZone
+    storagePrivateDnsZone::storatePrivateDnsZoneLink
+  ]
+
+  resource pvtEndpointDnsGroup 'privateDnsZoneGroups' = {
+    name: privateDnsGroupNameAzureContainerRegistry
+    properties: {
+      privateDnsZoneConfigs: [
+        {
+          name: 'config1'
+          properties: {
+            privateDnsZoneId: acrPrivateDnsZone.id
+          }
+        }
+      ]
+    }
+  }
+}
+
+resource storagePrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: storagePrivateDnsZoneName
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    vnet
+    acr
+  ]
+  resource storatePrivateDnsZoneLink 'virtualNetworkLinks' = {
+    name: '${storagePrivateDnsZoneName}-link'
+    location: 'global'
+    properties: {
+      registrationEnabled: false
+      virtualNetwork: {
+        id: vnet.id
+      }
+    }
+  }
+}
+
+// Chapter 003: The container app environment
+module caenv './modules/containerAppEnvironment.bicep' = {
   name: 'caenv'
   params: {
     fileShareNames: fileShareNames
@@ -135,7 +358,8 @@ module caenv 'caenv.bicep' = {
   ]
 }
 
-module privatedns 'privatedns.bicep' = {
+// to be able to use properties as name, this is on a separate module
+module privatedns './modules/containerAppPrivateDns.bicep' = {
   name: 'privatedns'
   params: {
     defaultDomain: caenv.outputs.defaultDomain
@@ -144,164 +368,7 @@ module privatedns 'privatedns.bicep' = {
   }
 }
 
-resource mariadbPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: mariadbPrivateDnsZoneName
-  location: 'global'
-  properties: {}
-  dependsOn: [
-    vnet
-    acr
-  ]
-  resource privateDnsZoneLink 'virtualNetworkLinks' = {
-    name: '${mariadbPrivateDnsZoneName}-link'
-    location: 'global'
-    properties: {
-      registrationEnabled: false
-      virtualNetwork: {
-        id: vnet.id
-      }
-    }
-  }
-}
-
-resource acrPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: acrPrivateDnsZoneName
-  location: 'global'
-  properties: {}
-  dependsOn: [
-    vnet
-    acr
-  ]
-  resource privateDnsZoneLink 'virtualNetworkLinks' = {
-    name: '${acrPrivateDnsZoneName}-link'
-    location: 'global'
-    properties: {
-      registrationEnabled: false
-      virtualNetwork: {
-        id: vnet.id
-      }
-    }
-  }
-}
-// network security group to deny internet
-resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
-  name: 'nsg-${projectName}-${salt}'
-  location: location
-  properties: {
-    securityRules: [
-      {
-        name: 'Allow_VNet_Outbound'
-        properties: {
-          priority: 100
-          access: 'Allow'
-          direction: 'Outbound'
-          protocol: '*'
-          sourcePortRange: '*'
-          sourceAddressPrefix: 'VirtualNetwork'
-          destinationPortRange: '*'
-          destinationAddressPrefix: 'VirtualNetwork'
-        }
-      }
-      {
-        name: 'deny-internet'
-        properties: {
-          priority: 2000
-          access: 'Deny'
-          direction: 'Outbound'
-          sourcePortRange: '*'
-          sourceAddressPrefix: '*'
-          destinationAddressPrefix: 'Internet'
-          destinationPortRange: '*'
-          protocol: '*'
-        }
-      }
-    ]
-  }
-}
-
-resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
-  name: vnetName
-  location: location
-  properties: {
-    addressSpace: {
-      addressPrefixes: [
-        vnetAddressSpace
-      ]
-    }
-    subnets: [
-      {
-        name: 'containerapp'
-        properties: {
-          addressPrefix: appEnvSubnetCidr
-          networkSecurityGroup: (denyInternet) ? {
-            id: nsgDenyInternet.id
-          } : null
-          delegations: [ {
-              name: 'Microsoft.App/environments'
-              properties: {
-                serviceName: 'Microsoft.App/environments'
-              }
-            }
-          ]
-        }
-      }
-      {
-        name: 'AzureFirewallSubnet'
-        properties: {
-          addressPrefix: firewallSubnetCidr
-          delegations: []
-          serviceEndpoints: []
-        }
-      }
-      {
-        name: 'dbsubnet'
-        properties: {
-          addressPrefix: dbSubnetCidr
-          delegations: []
-          serviceEndpoints: [
-            {
-              service: 'Microsoft.Sql'
-              locations: [
-                location
-              ]
-            }
-          ]
-        }
-      }
-      {
-        name: 'privatelinks'
-        properties: {
-          addressPrefix: privateLinkSubnetCidr
-          privateEndpointNetworkPolicies: 'Disabled'
-          delegations: []
-        }
-      }
-      {
-        name: 'appgwsubnet'
-        properties: {
-          addressPrefix: appEnvSubnetAppGw
-          delegations: []
-        }
-      }
-    ]
-  }
-  resource containerappSubnet 'subnets' existing = {
-    name: 'containerapp'
-  }
-  resource firewallSubnet 'subnets' existing = {
-    name: 'AzureFirewallSubnet'
-  }
-  resource dbSubnet 'subnets' existing = {
-    name: 'dbsubnet'
-  }
-  resource privateLinkSubnet 'subnets' existing = {
-    name: 'privatelinks'
-  }
-  resource appGwSubnet 'subnets' existing = {
-    name: 'appgwsubnet'
-  }
-}
-
+// Chapter 004: Azure Container Registry
 resource acr 'Microsoft.ContainerRegistry/registries@2022-12-01' = {
   name: containerRegistryName
   location: location
@@ -314,11 +381,6 @@ resource acr 'Microsoft.ContainerRegistry/registries@2022-12-01' = {
   }
 }
 
-resource uai 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-${containerAppName}'
-  location: location
-}
-
 resource uaiRbac 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(resourceGroup().id, uai.id, acrPullRole)
   scope: acr
@@ -329,6 +391,7 @@ resource uaiRbac 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// Chapter 005: Import Docker Containers
 @description('An array of fully qualified images names to import')
 param images array = [
   'docker.io/phpipam/phpipam-www:latest'
@@ -351,6 +414,8 @@ module acrImport 'br/public:deployment-scripts/import-acr:1.0.1' = if (importIma
   }
 }
 
+
+// Chapter 006: THE CONTAINER APPS
 resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
     acrImport
@@ -428,14 +493,14 @@ resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployA
             memory: '2Gi'
           }
           volumeMounts: [
-            {
-              mountPath: '/phpipam/css/images/logo'
-              volumeName: 'phpipam-logo'
-            }
-            {
-              mountPath: '/usr/local/share/ca-certificates'
-              volumeName: 'phpipam-ca'
-            }
+            // {
+            //   mountPath: '/phpipam/css/images/logo'
+            //   volumeName: 'phpipam-logo'
+            // }
+            // {
+            //   mountPath: '/usr/local/share/ca-certificates'
+            //   volumeName: 'phpipam-ca'
+            // }
           ]
         }
       ]
@@ -454,16 +519,16 @@ resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployA
         ]
       }
       volumes: [
-        {
-          name: 'phpipam-logo'
-          storageName: 'logo'
-          storageType: 'AzureFile'
-        }
-        {
-          name: 'phpipam-ca'
-          storageName: 'ca'
-          storageType: 'AzureFile'
-        }
+        // {
+        //   name: 'phpipam-logo'
+        //   storageName: 'logo'
+        //   storageType: 'AzureFile'
+        // }
+        // {
+        //   name: 'phpipam-ca'
+        //   storageName: 'ca'
+        //   storageType: 'AzureFile'
+        // }
       ]
     }
   }
@@ -539,10 +604,10 @@ resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = if (dep
             memory: '2Gi'
           }
           volumeMounts: [
-            {
-              mountPath: '/usr/local/share/ca-certificates'
-              volumeName: 'phpipam-ca'
-            }
+            // {
+            //   mountPath: '/usr/local/share/ca-certificates'
+            //   volumeName: 'phpipam-ca'
+            // }
           ]
         }
       ]
@@ -552,57 +617,16 @@ resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = if (dep
         rules: []
       }
       volumes: [
-        {
-          name: 'phpipam-ca'
-          storageName: 'ca'
-          storageType: 'AzureFile'
-        }
+        // {
+        //   name: 'phpipam-ca'
+        //   storageName: 'ca'
+        //   storageType: 'AzureFile'
+        // }
       ]
     }
   }
 }
 
-param mariaDbServerName string = 'mariadb-${projectName}-${salt}'
-
-resource mariaDbServer 'Microsoft.DBforMariaDB/servers@2018-06-01' = {
-  name: mariaDbServerName
-  location: location
-  sku: {
-    name: 'GP_Gen5_2'
-    tier: 'GeneralPurpose'
-    capacity: 2
-    size: '51200' //a string is expected here but a int for the storageProfile...
-    family: 'Gen5'
-  }
-  properties: {
-    sslEnforcement: 'Disabled'
-    createMode: 'Default'
-    version: '10.3'
-    administratorLogin: dbUser
-    administratorLoginPassword: dbCredential
-    storageProfile: {
-      storageMB: 51200
-      backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
-    }
-    publicNetworkAccess: 'Disabled'
-  }
-  // resource allowAllAzure 'firewallRules' = {
-  //   name: 'AllowAllWindowsAzureIps'
-  //   properties: {
-  //     startIpAddress: '0.0.0.0'
-  //     endIpAddress: '0.0.0.0'
-  //   }
-  // }
-
-  // resource virtualNetworkRule 'virtualNetworkRules@2018-06-01' = {
-  //   name: 'myrule'
-  //   properties: {
-  //     virtualNetworkSubnetId: vnet::dbSubnet.id
-  //   }
-  // }
-
-}
 
 resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deployApps) {
   dependsOn: importImagesToAcr ? [
@@ -677,7 +701,52 @@ resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deploy
   }
 }
 
-resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2020-06-01' = {
+// Chapter 007: Supporting Resources
+param mariaDbServerName string = 'mariadb-${projectName}-${salt}'
+
+resource mariaDbServer 'Microsoft.DBforMariaDB/servers@2018-06-01' = {
+  name: mariaDbServerName
+  location: location
+  sku: {
+    name: 'GP_Gen5_2'
+    tier: 'GeneralPurpose'
+    capacity: 2
+    size: '51200' //a string is expected here but a int for the storageProfile...
+    family: 'Gen5'
+  }
+  properties: {
+    sslEnforcement: 'Disabled'
+    createMode: 'Default'
+    version: '10.3'
+    administratorLogin: dbUser
+    administratorLoginPassword: dbCredential
+    storageProfile: {
+      storageMB: 51200
+      backupRetentionDays: 7
+      geoRedundantBackup: 'Disabled'
+    }
+    publicNetworkAccess: 'Disabled'
+  }
+  // resource allowAllAzure 'firewallRules' = {
+  //   name: 'AllowAllWindowsAzureIps'
+  //   properties: {
+  //     startIpAddress: '0.0.0.0'
+  //     endIpAddress: '0.0.0.0'
+  //   }
+  // }
+
+  // resource virtualNetworkRule 'virtualNetworkRules@2018-06-01' = {
+  //   name: 'myrule'
+  //   properties: {
+  //     virtualNetworkSubnetId: vnet::dbSubnet.id
+  //   }
+  // }
+
+}
+
+// Chapter 008: Making it available from the INTERNET
+
+resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2023-05-01' = {
   name: 'MyApplicationGateway-PIP'
   location: location
   sku: {
@@ -690,23 +759,9 @@ resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2020-06-01' = {
     }
   }
 }
-
-resource firewallPublicIPAddress 'Microsoft.Network/publicIPAddresses@2020-06-01' = {
-  name: 'MyFirewall-PIP'
-  location: location
-  sku: {
-    name: 'Standard'
-  }
-  properties: {
-    publicIPAllocationMethod: 'Static'
-    dnsSettings: {
-      domainNameLabel: 'azfw${salt}'
-    }
-  }
-}
 param applicationGatewayName string = 'appgw-${containerAppName}'
 
-resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' = if (deployApps) {
+resource applicationGateway 'Microsoft.Network/applicationGateways@2023-05-01' = if (deployApps) {
   name: applicationGatewayName
   location: location
   properties: {
@@ -834,7 +889,57 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2021-05-01' =
   }
 }
 
-resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2020-11-01' = {
+// Chapter 009: Locking down the rest
+resource nsgDenyInternet 'Microsoft.Network/networkSecurityGroups@2023-05-01' = {
+  name: 'nsg-${projectName}-${salt}'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'Allow_VNet_Outbound'
+        properties: {
+          priority: 100
+          access: 'Allow'
+          direction: 'Outbound'
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          destinationPortRange: '*'
+          destinationAddressPrefix: 'VirtualNetwork'
+        }
+      }
+      {
+        name: 'deny-internet'
+        properties: {
+          priority: 2000
+          access: 'Deny'
+          direction: 'Outbound'
+          sourcePortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: 'Internet'
+          destinationPortRange: '*'
+          protocol: '*'
+        }
+      }
+    ]
+  }
+}
+
+resource firewallPublicIPAddress 'Microsoft.Network/publicIPAddresses@2023-05-01' = {
+  name: 'MyFirewall-PIP'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+    dnsSettings: {
+      domainNameLabel: 'azfw${salt}'
+    }
+  }
+}
+
+resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2023-05-01' = {
   parent: firewallPolicy
   name: 'DefaultNetworkRuleCollectionGroup'
   properties: {
@@ -898,7 +1003,7 @@ resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollection
 }
 
 var loginEndpointWithoutProtocolAndWithoutSlashes = replace(replace(environment().authentication.loginEndpoint, 'https://', ''), '/', '')
-resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2020-11-01' = {
+resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2023-05-01' = {
   parent: firewallPolicy
   name: 'DefaultApplicationRuleCollectionGroup'
   properties: {
@@ -1025,7 +1130,8 @@ resource firewall 'Microsoft.Network/azureFirewalls@2023-05-01' = {
     }
   }
 }
-resource firewallPolicy 'Microsoft.Network/firewallPolicies@2020-11-01' = {
+
+resource firewallPolicy 'Microsoft.Network/firewallPolicies@2023-05-01' = {
   name: 'myFirewallPolicy'
   location: location
   properties: {
@@ -1038,7 +1144,7 @@ resource firewallPolicy 'Microsoft.Network/firewallPolicies@2020-11-01' = {
 
 var firewallPrivateIp = cidrHost(firewallSubnetCidr, 3)
 
-resource routeTable 'Microsoft.Network/routeTables@2020-08-01' = {
+resource routeTable 'Microsoft.Network/routeTables@2023-05-01' = {
   name: 'myRouteTable'
   location: location
   properties: {
@@ -1056,7 +1162,7 @@ resource routeTable 'Microsoft.Network/routeTables@2020-08-01' = {
   }
 }
 
-module routeToSubnet 'addRouteTable.bicep' = {
+module routeToSubnet './modules/addRouteTable.bicep' = {
   name: 'addRouteToSubnet'
   params: {
     routeTableName: routeTable.name

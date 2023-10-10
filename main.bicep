@@ -421,11 +421,15 @@ resource containerAppIpam 'Microsoft.App/containerApps@2023-05-01' = if (deployA
     routeToSubnet
     firewallPolicy
     firewall
+    ruleCollectionGroup2
+    ruleCollectionGroup
     vnet
   ] : [
     routeToSubnet
     firewallPolicy
     firewall
+    ruleCollectionGroup2
+    ruleCollectionGroup
     vnet
   ]
   name: containerAppName
@@ -545,11 +549,15 @@ resource containerAppIpamCron 'Microsoft.App/containerApps@2023-05-01' = if (dep
     routeToSubnet
     firewallPolicy
     firewall
+    ruleCollectionGroup2
+    ruleCollectionGroup
     vnet
   ] : [
     routeToSubnet
     firewallPolicy
     firewall
+    ruleCollectionGroup2
+    ruleCollectionGroup
     vnet
   ]
   name: '${containerAppName}-cron'
@@ -646,9 +654,13 @@ resource containerAppDebug 'Microsoft.App/containerApps@2023-05-01' = if (deploy
     firewallPolicy
     firewall
     vnet
+    ruleCollectionGroup2
+    ruleCollectionGroup
   ] : [
     routeToSubnet
     firewallPolicy
+    ruleCollectionGroup2
+    ruleCollectionGroup
     firewall
     vnet
   ]
@@ -988,7 +1000,6 @@ resource ruleCollectionGroup2 'Microsoft.Network/firewallPolicies/ruleCollection
               'AzureCloud.${location}'
             ]
           }
-
           {
             ruleType: 'NetworkRule'
             name: 'ContainerApps'
